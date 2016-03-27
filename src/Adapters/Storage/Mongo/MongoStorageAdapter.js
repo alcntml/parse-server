@@ -1,7 +1,8 @@
 
 import MongoCollection from './MongoCollection';
 import MongoSchemaCollection from './MongoSchemaCollection';
-import {parse as parseUrl, format as formatUrl} from '../../../vendor/mongodbUrl';
+import { parse as parseUrl, format as formatUrl } from '../../../vendor/mongodbUrl';
+import * as transform from './MongoTransform';
 
 let mongodb = require('mongodb');
 let MongoClient = mongodb.MongoClient;
@@ -77,6 +78,10 @@ export class MongoStorageAdapter {
         return (collection.collectionName.indexOf(match) == 0);
       });
     });
+  }
+
+  get transform() {
+    return transform;
   }
 }
 

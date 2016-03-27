@@ -15,7 +15,6 @@
 // TODO: hide all schema logic inside the database adapter.
 
 var Parse = require('parse/node').Parse;
-var transform = require('./transform');
 import MongoSchemaCollection from './Adapters/Storage/Mongo/MongoSchemaCollection';
 import _                     from 'lodash';
 
@@ -398,7 +397,7 @@ class Schema {
   // If 'freeze' is true, refuse to update the schema for this field.
   validateField(className, fieldName, type, freeze) {
     // Just to check that the fieldName is valid
-    transform.transformKey(this, className, fieldName);
+    this._collection.transform.transformKey(this, className, fieldName);
 
     if( fieldName.indexOf(".") > 0 ) {
       // subdocument key (x.y) => ok if x is of type 'object'

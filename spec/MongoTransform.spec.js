@@ -1,6 +1,6 @@
 // These tests are unit tests designed to only test transform.js.
 
-var transform = require('../src/transform');
+var transform = require('../src/Adapters/Storage/Mongo/MongoTransform');
 
 var dummySchema = {
     data: {},
