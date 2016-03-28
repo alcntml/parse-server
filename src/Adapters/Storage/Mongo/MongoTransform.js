@@ -1,4 +1,4 @@
-import log from './logger';
+import log from '../../../logger';
 var mongodb = require('mongodb');
 var Parse = require('parse/node').Parse;
 
@@ -186,14 +186,16 @@ export function transformKeyValue(schema, className, restKey, restValue, options
 // restWhere is the "where" clause in REST API form.
 // Returns the mongo form of the query.
 // Throws a Parse.Error if the input query is invalid.
-function transformWhere(schema, className, restWhere) {
+function transformWhere(schema, className, restWhere, options = {validate: true}) {
   let mongoWhere = {};
   if (restWhere['ACL']) {
     throw new Parse.Error(Parse.Error.INVALID_QUERY, 'Cannot query on ACL.');
   }
+  let transformKeyOptions = {query: true};
+  transformKeyOptions.validate = options.validate;
   for (let restKey in restWhere) {
     let out = transformKeyValue(schema, className, restKey, restWhere[restKey],
-                                {query: true, validate: true});
+                                transformKeyOptions);
     mongoWhere[out.key] = out.value;
   }
   return mongoWhere;
@@ -738,6 +740,66 @@ function untransformObject(schema, className, mongoObject, isNestedObject = fals
   }
 }
 
+function transformSelect(selectObject, key ,objects) {
+  var values = [];
+  for (var result of objects) {
+    values.push(result[key]);
+  }
+  delete selectObject['$select'];
+  if (Array.isArray(selectObject['$in'])) {
+    selectObject['$in'] = selectObject['$in'].concat(values);
+  } else {
+    selectObject['$in'] = values;
+  }
+}
+
+function transformDontSelect(dontSelectObject, key, objects) {
+  var values = [];
+  for (var result of objects) {
+    values.push(result[key]);
+  }
+  delete dontSelectObject['$dontSelect'];
+  if (Array.isArray(dontSelectObject['$nin'])) {
+    dontSelectObject['$nin'] = dontSelectObject['$nin'].concat(values);
+  } else {
+    dontSelectObject['$nin'] = values;
+  }
+}
+
+function transformInQuery(inQueryObject, className, results) {
+  var values = [];
+  for (var result of results) {
+    values.push({
+      __type: 'Pointer',
+      className: className,
+      objectId: result.objectId
+    });
+  }
+  delete inQueryObject['$inQuery'];
+  if (Array.isArray(inQueryObject['$in'])) {
+    inQueryObject['$in'] = inQueryObject['$in'].concat(values);
+  } else {
+    inQueryObject['$in'] = values;
+  }
+}
+
+function transformNotInQuery(notInQueryObject, className, results) {
+  var values = [];
+  for (var result of results) {
+    values.push({
+      __type: 'Pointer',
+      className: className,
+      objectId: result.objectId
+    });
+  }
+  delete notInQueryObject['$notInQuery'];
+  if (Array.isArray(notInQueryObject['$nin'])) {
+    notInQueryObject['$nin'] = notInQueryObject['$nin'].concat(values);
+  } else {
+    notInQueryObject['$nin'] = values;
+  }
+}
+
 function addWriteACL(mongoWhere, acl) {
   var writePerms = [
     {_wperm: {'$exists': false}}
@@ -848,11 +910,15 @@ var FileCoder = {
 };
 
 module.exports = {
-  transformKey: transformKey,
-  transformCreate: transformCreate,
-  transformUpdate: transformUpdate,
-  transformWhere: transformWhere,
-  addReadACL: addReadACL,
-  addWriteACL: addWriteACL,
-  untransformObject: untransformObject
+  transformKey,
+  transformCreate,
+  transformUpdate,
+  transformWhere,
+  transformSelect,
+  transformDontSelect,
+  transformInQuery,
+  transformNotInQuery,
+  addReadACL,
+  addWriteACL,
+  untransformObject
 };

@@ -510,11 +510,9 @@ class Schema {
 
             // for non-relations, remove all the data.
             // This is necessary to ensure that the data is still gone if they add the same field.
-            return database.adaptiveCollection(className)
-              .then(collection => {
-                let mongoFieldName = this.data[className][fieldName].startsWith('*') ? `_p_${fieldName}` : fieldName;
-                return collection.updateMany({}, { "$unset": { [mongoFieldName]: null } });
-              });
+            let unsafeDB = database.Unsafe();
+            let transformFieldName = unsafeDB.transform.transformKey(this, className, fieldName);
+            return unsafeDB.update(className, {}, {[transformFieldName]: {__op: 'Delete'}}, {many: true});
           })
           // Save the _SCHEMA object
           .then(() => this._collection.updateSchema(className, { $unset: { [fieldName]: null } }));

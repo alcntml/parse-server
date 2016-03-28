@@ -11,7 +11,7 @@ const deepcopy = require('deepcopy');
 
 // options can contain:
 //   collectionPrefix: the string to put in front of every collection name.
-function DatabaseController(adapter, { collectionPrefix } = {}) {
+function DatabaseController(adapter, { collectionPrefix, unsafe } = {}) {
   this.adapter = adapter;
 
   this.collectionPrefix = collectionPrefix;
@@ -20,8 +20,18 @@ function DatabaseController(adapter, { collectionPrefix } = {}) {
   // one request that uses different schemas for different parts of
   // it. Instead, use loadSchema to get a schema.
   this.schemaPromise = null;
-
+  this.unsafe = !!unsafe;
   this.connect();
+
+  Object.defineProperty(this, 'transform', {
+     get: function() {
+       return adapter.transform;
+     }
+  })
+}
+
+DatabaseController.prototype.Unsafe = function() {
+  return new DatabaseController(this.adapter, {collectionPrefix: this.collectionPrefix, unsafe: true});
 }
 
 // Connects to the database. Returns a promise that resolves when the
@@ -30,8 +40,8 @@ DatabaseController.prototype.connect = function() {
   return this.adapter.connect();
 };
 
-DatabaseController.prototype.adaptiveCollection = function(className) {
-  return this.adapter.adaptiveCollection(this.collectionPrefix + className);
+const adaptiveCollection = function(database, className) {
+  return database.adapter.adaptiveCollection(database.collectionPrefix + className);
 };
 
 DatabaseController.prototype.schemaCollection = function() {
@@ -51,6 +61,9 @@ function returnsTrue() {
 }
 
 DatabaseController.prototype.validateClassName = function(className) {
+  if (this.unsafe) {
+    return Promise.resolve();
+  }
   if (!Schema.classNameIsValid(className)) {
     const error = new Parse.Error(Parse.Error.INVALID_CLASS_NAME, 'invalid className: ' + className);
     return Promise.reject(error);
@@ -121,7 +134,7 @@ DatabaseController.prototype.validateObject = function(className, object, query,
 // Filters out any data that shouldn't be on this REST-formatted object.
 DatabaseController.prototype.untransformObject = function(
   schema, isMaster, aclGroup, className, mongoObject) {
-  var object = this.adapter.transform.untransformObject(schema, className, mongoObject);
+  var object = this.transform.untransformObject(schema, className, mongoObject);
 
   if (className !== '_User') {
     return object;
@@ -144,7 +157,7 @@ DatabaseController.prototype.untransformObject = function(
 //   acl:  a list of strings. If the object to be updated has an ACL,
 //         one of the provided strings must provide the caller with
 //         write permissions.
-DatabaseController.prototype.update = function(className, query, update, options) {
+DatabaseController.prototype.update = function(className, query, update, options = {}) {
 
   const originalUpdate = update;
   // Make a copy of the object, so we don't mutate the incoming data.
@@ -165,19 +178,28 @@ DatabaseController.prototype.update = function(className, query, update, options
       return Promise.resolve();
     })
     .then(() => this.handleRelationUpdates(className, query.objectId, update))
-    .then(() => this.adaptiveCollection(className))
+    .then(() => adaptiveCollection(this, className))
     .then(collection => {
-      var mongoWhere = this.adapter.transform.transformWhere(schema, className, query);
+      var mongoWhere = this.transform.transformWhere(schema, className, query, {validate: !this.unsafe});
       if (options.acl) {
-        mongoWhere = this.adapter.transform.addWriteACL(mongoWhere, options.acl);
+        mongoWhere = this.transform.addWriteACL(mongoWhere, options.acl);
       }
-      mongoUpdate = this.adapter.transform.transformUpdate(schema, className, update);
-      return collection.findOneAndUpdate(mongoWhere, mongoUpdate);
+      mongoUpdate = this.transform.transformUpdate(schema, className, update, {validate: !this.unsafe});
+      if (options.many) {
+        return collection.updateMany(mongoWhere, mongoUpdate);
+      }else if (options.upsert) {
+        return collection.upsertOne(mongoWhere, mongoUpdate);
+      } else {
+        return collection.findOneAndUpdate(mongoWhere, mongoUpdate);
+      }
     })
     .then(result => {
       if (!result) {
         return Promise.reject(new Parse.Error(Parse.Error.OBJECT_NOT_FOUND,
           'Object not found.'));
+      }
+      if (this.unsafe) {
+        return Promise.resolve(result);
       }
       return sanitizeDatabaseResult(originalUpdate, result);
     });
@@ -257,7 +279,7 @@ DatabaseController.prototype.addRelation = function(key, fromClassName, fromId, 
     owningId : fromId
   };
   let className = `_Join:${key}:${fromClassName}`;
-  return this.adaptiveCollection(className).then((coll) => {
+  return adaptiveCollection(this, className).then((coll) => {
     return coll.upsertOne(doc, doc);
   });
 };
@@ -271,7 +293,7 @@ DatabaseController.prototype.removeRelation = function(key, fromClassName, fromI
     owningId: fromId
   };
   let className = `_Join:${key}:${fromClassName}`;
-  return this.adaptiveCollection(className).then(coll => {
+  return adaptiveCollection(this, className).then(coll => {
     return coll.deleteOne(doc);
   });
 };
@@ -296,11 +318,11 @@ DatabaseController.prototype.destroy = function(className, query, options = {}) 
       }
       return Promise.resolve();
     })
-    .then(() => this.adaptiveCollection(className))
+    .then(() => adaptiveCollection(this, className))
     .then(collection => {
-      let mongoWhere = this.adapter.transform.transformWhere(schema, className, query, options);
+      let mongoWhere = this.transform.transformWhere(schema, className, query, {validate: !this.unsafe});
       if (options.acl) {
-        mongoWhere = this.adapter.transform.addWriteACL(mongoWhere, options.acl);
+        mongoWhere = this.transform.addWriteACL(mongoWhere, options.acl);
       }
       return collection.deleteMany(mongoWhere);
     })
@@ -315,7 +337,7 @@ DatabaseController.prototype.destroy = function(className, query, options = {}) 
 
 // Inserts an object into the database.
 // Returns a promise that resolves successfully iff the object saved.
-DatabaseController.prototype.create = function(className, object, options) {
+DatabaseController.prototype.create = function(className, object, options = {}) {
   // Make a copy of the object, so we don't mutate the incoming data.
   let originalObject = object;
   object = deepcopy(object);
@@ -334,9 +356,9 @@ DatabaseController.prototype.create = function(className, object, options) {
       return Promise.resolve();
     })
     .then(() => this.handleRelationUpdates(className, null, object))
-    .then(() => this.adaptiveCollection(className))
+    .then(() => adaptiveCollection(this, className))
     .then(coll => {
-      var mongoObject = this.adapter.transform.transformCreate(schema, className, object);
+      var mongoObject = this.transform.transformCreate(schema, className, object);
       return coll.insertOne(mongoObject);
     })
     .then(result => {
@@ -365,7 +387,7 @@ DatabaseController.prototype.canAddField = function(schema, className, object, a
 // to avoid Mongo-format dependencies.
 // Returns a promise that resolves to a list of items.
 DatabaseController.prototype.mongoFind = function(className, query, options = {}) {
-  return this.adaptiveCollection(className)
+  return adaptiveCollection(this, className)
     .then(collection => collection.find(query, options));
 };
 
@@ -400,7 +422,7 @@ function keysForQuery(query) {
 // Returns a promise for a list of related ids given an owning id.
 // className here is the owning className.
 DatabaseController.prototype.relatedIds = function(className, key, owningId) {
-  return this.adaptiveCollection(joinTableName(className, key))
+  return adaptiveCollection(this, joinTableName(className, key))
     .then(coll => coll.find({owningId : owningId}))
     .then(results => results.map(r => r.relatedId));
 };
@@ -408,7 +430,7 @@ DatabaseController.prototype.relatedIds = function(className, key, owningId) {
 // Returns a promise for a list of owning ids given some related ids.
 // className here is the owning className.
 DatabaseController.prototype.owningIds = function(className, key, relatedIds) {
-  return this.adaptiveCollection(joinTableName(className, key))
+  return adaptiveCollection(this, joinTableName(className, key))
     .then(coll => coll.find({ relatedId: { '$in': relatedIds } }))
     .then(results => results.map(r => r.owningId));
 };
@@ -595,7 +617,7 @@ DatabaseController.prototype.find = function(className, query, options = {}) {
     if (options.sort) {
       mongoOptions.sort = {};
       for (let key in options.sort) {
-        let mongoKey = this.adapter.transform.transformKey(schema, className, key);
+        let mongoKey = this.transform.transformKey(schema, className, key);
         mongoOptions.sort[mongoKey] = options.sort[key];
       }
     }
@@ -610,11 +632,11 @@ DatabaseController.prototype.find = function(className, query, options = {}) {
   })
   .then(() => this.reduceRelationKeys(className, query))
   .then(() => this.reduceInRelation(className, query, schema))
-  .then(() => this.adaptiveCollection(className))
+  .then(() => adaptiveCollection(this, className))
   .then(collection => {
-    let mongoWhere = this.adapter.transform.transformWhere(schema, className, query);
+    let mongoWhere = this.transform.transformWhere(schema, className, query);
     if (!isMaster) {
-      mongoWhere = this.adapter.transform.addReadACL(mongoWhere, aclGroup);
+      mongoWhere = this.transform.addReadACL(mongoWhere, aclGroup);
     }
     if (options.count) {
       delete mongoOptions.limit;
@@ -630,6 +652,25 @@ DatabaseController.prototype.find = function(className, query, options = {}) {
     }
   });
 };
+
+DatabaseController.prototype.deleteSchema = function(className) {
+  return this.collectionExists(className)
+    .then(exist => {
+      if (!exist) {
+        return Promise.resolve();
+      }
+      return adaptiveCollection(this, className)
+        .then(collection => {
+          return collection.count()
+            .then(count => {
+              if (count > 0) {
+                throw new Parse.Error(255, `Class ${className} is not empty, contains ${count} objects, cannot drop schema.`);
+              }
+              return collection.drop();
+            })
+        })
+    })
+}
 
 function joinTableName(className, key) {
   return `_Join:${key}:${className}`;
